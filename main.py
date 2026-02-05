@@ -75,19 +75,22 @@ async def is_gibberish(text):
     headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
     payload = {
         "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite",
+        "completionOptions": {"stream": False, "temperature": 0, "maxTokens": "10"},
         "messages": [
-            {"role": "system",
-             "text": "Если текст выглядит как абракадабра из-за раскладки (ghbdtn), ответь ДА. Иначе НЕТ."},
+            {"role": "system", "text": "Если текст выглядит как абракадабра из-за забытой раскладки (например, 'ghbdtn'), ответь только словом ДА. Если это осмысленный английский текст, ответь НЕТ."},
             {"role": "user", "text": text}
         ]
     }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload) as resp:
-                res = await resp.json()
-                return "ДА" in res['result']['alternatives'][0]['message']['text'].upper()
-    except:
-        return False
+                data = await resp.json()
+                result = data['result']['alternatives'][0]['message']['text'].strip().upper()
+                return "ДА" in result
+    except Exception as e:
+        logging.error(f"Ошибка LLM: {e}")
+        return True
+  
 
 
 @dp.message(Command("start"))
@@ -302,36 +305,87 @@ async def handle_voice(message: types.Message):
 
 @dp.message()
 async def main_handler(message: types.Message):
+    if not message.from_user or message.from_user.is_bot:
+        return
+
     cid = message.chat.id
     cid_str = str(cid)
+    text = message.text
+
+    # Кэширование для стикеров
     if cid not in message_cache: message_cache[cid] = []
     message_cache[cid].append(message)
     if len(message_cache[cid]) > 100: message_cache[cid].pop(0)
 
-    if message.text:
+    if not text:
+        return
+
+    # --- ЛОГИКА РЕПУТАЦИИ ---
+    if message.reply_to_message and message.reply_to_message.from_user:
+        triggers = ["+", "красава", "имба", "база", "респект", "лайк", "спс", "спасибо"]
+        if any(t in text.lower().strip() for t in triggers):
+            target = message.reply_to_message.from_user
+            if target.id != message.from_user.id:
+                if cid_str not in reputation: reputation[cid_str] = {}
+                uid_str = str(target.id)
+                reputation[cid_str][uid_str] = reputation[cid_str].get(uid_str, 0) + 1
+                save_rep()
+
+                score = reputation[cid_str][uid_str]
+                try:
+                    await bot.set_chat_administrator_custom_title(cid, target.id, f"Репа: {score}")
+                except:
+                    pass
+
+                await message.answer(f"📈 {target.first_name}, твоя репутация: **{score}**", parse_mode="Markdown")
+                return
+
+    # --- ЛОГИКА ПЕРЕВОДА РАСКЛАДКИ ---
+    # Условия: нет русских букв, не команда, не ссылка, не реплай, длина > 3
+    has_cyrillic = any('а' <= c.lower() <= 'я' for c in text)
+    is_service = text.startswith(('/', '@', 'http'))
+
+    if not has_cyrillic and not is_service and not message.reply_to_message and len(text) > 3:
+        clean = re.sub(r'[^\w\s]', '', text).strip()
+        if clean and not clean.isdigit():
+            # Проверяем через LLM, не является ли это нормальным английским
+            if await is_gibberish(text):
+                conv = "".join(layout_map.get(c, c) for c in text)
+                if conv.lower() != text.lower():
+                    await message.reply(f"🇷🇺 **Перевод раскладки:**\n`{conv}`", parse_mode="Markdown")
+
+    # Кэширование сообщений
+    if cid not in message_cache:
+        message_cache[cid] = []
+    message_cache[cid].append(message)
+    if len(message_cache[cid]) > 100:
+        message_cache[cid].pop(0)
+
+    # ВАЖНО: Определяем переменную text в самом начале
+
+
+    if text:
+        # Логика репутации
         if message.reply_to_message and message.reply_to_message.from_user:
             triggers = ["+", "красава", "имба", "база", "респект", "лайк", "спс"]
-            if any(t in message.text.lower().strip() for t in triggers):
+            if any(t in text.lower().strip() for t in triggers):
                 target = message.reply_to_message.from_user
-
                 if target.id == message.from_user.id:
                     return
-                if cid_str not in reputation: reputation[cid_str] = {}
+
+                if cid_str not in reputation:
+                    reputation[cid_str] = {}
+
                 user_id_str = str(target.id)
                 reputation[cid_str][user_id_str] = reputation[cid_str].get(user_id_str, 0) + 1
                 save_rep()
+
                 new_score = reputation[cid_str][user_id_str]
                 try:
-                    await bot.promote_chat_member(
-                        chat_id=cid,
-                        user_id=target.id,
-                        can_manage_chat=True
-                    )
-
                     await bot.set_chat_administrator_custom_title(
                         chat_id=cid,
                         user_id=target.id,
-                        custom_title=f" Репа: {new_score}"
+                        custom_title=f"Репа: {new_score}"
                     )
                 except Exception as e:
                     logging.error(f"Ошибка титула: {e}")
@@ -339,12 +393,7 @@ async def main_handler(message: types.Message):
                 await message.answer(f"📈 {target.first_name}, твоя репутация: **{new_score}**")
                 return
 
-        if not any('а' <= c.lower() <= 'я' for c in message.text) and not message.text.startswith(('/', '@')):
-            clean = re.sub(r'[^\w\s.,!?\-]', '', message.text).strip()
-            if clean and not clean.isdigit() and await is_gibberish(clean):
-                conv = "".join(layout_map.get(c, c) for c in message.text)
-                await message.reply(f"🇷🇺 **Перевод:**\n`{conv}`", parse_mode="Markdown")
-                return
+
 
 async def main():
     print("Бот запущен...")
@@ -352,5 +401,4 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-
     asyncio.run(main())
