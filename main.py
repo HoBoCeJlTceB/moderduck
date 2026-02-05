@@ -14,9 +14,9 @@ import json
 import os
 
 
-BOT_TOKEN = "8249817163:AAE2wLaHKHwV5NdDYzHh8D57STEJO_6C6IY"
-YANDEX_API_KEY = "AQVN3UJYaU6NZPCsN-6NRouR29pV4WMpW0l7L9_o"
-YANDEX_FOLDER_ID = "b1gcf8q3taft8nffb7h1"
+BOT_TOKEN = ""
+YANDEX_API_KEY = ""
+YANDEX_FOLDER_ID = ""
 
 
 
@@ -352,4 +352,5 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+
     asyncio.run(main())
